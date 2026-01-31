@@ -4,6 +4,7 @@ import { connect } from 'react-redux';
 import { createSelector } from 'reselect';
 import { clearSearchResults, getSearchResults } from 'Store/Actions/searchActions';
 import { fetchRootFolders } from 'Store/Actions/settingsActions';
+import createUISettingsSelector from 'Store/Selectors/createUISettingsSelector';
 import parseUrl from 'Utilities/String/parseUrl';
 import AddNewItem from './AddNewItem';
 
@@ -12,13 +13,15 @@ function createMapStateToProps() {
     (state) => state.search,
     (state) => state.authors.items.length,
     (state) => state.router.location,
-    (search, existingAuthorsCount, location) => {
+    createUISettingsSelector(),
+    (search, existingAuthorsCount, location, uiSettings) => {
       const { params } = parseUrl(location.search);
 
       return {
         ...search,
         term: params.term,
-        hasExistingAuthors: existingAuthorsCount > 0
+        hasExistingAuthors: existingAuthorsCount > 0,
+        searchOnType: uiSettings.searchOnType
       };
     }
   );

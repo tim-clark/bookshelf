@@ -25,7 +25,8 @@ class AddNewItem extends Component {
 
     this.state = {
       term: props.term || '',
-      isFetching: false
+      isFetching: false,
+      hasSearched: false
     };
   }
 
@@ -61,18 +62,44 @@ class AddNewItem extends Component {
 
   onSearchInputChange = ({ value }) => {
     const hasValue = !!value.trim();
+    const { searchOnType } = this.props;
 
-    this.setState({ term: value, isFetching: hasValue }, () => {
+    // Only trigger search automatically if searchOnType is enabled
+    if (searchOnType) {
+      this.setState({ term: value, isFetching: hasValue, hasSearched: hasValue }, () => {
+        if (hasValue) {
+          this.props.onSearchChange(value);
+        } else {
+          this.props.onClearSearch();
+        }
+      });
+    } else {
+      // Just update the term without triggering search
+      this.setState({ term: value, hasSearched: false }, () => {
+        if (!hasValue) {
+          this.props.onClearSearch();
+        }
+      });
+    }
+  };
+
+  onSearchInputKeyDown = (event) => {
+    const { searchOnType } = this.props;
+
+    // If searchOnType is disabled, trigger search on Enter key
+    if (!searchOnType && event.key === 'Enter') {
+      const term = this.state.term;
+      const hasValue = !!term.trim();
+
       if (hasValue) {
-        this.props.onSearchChange(value);
-      } else {
-        this.props.onClearSearch();
+        this.setState({ isFetching: true, hasSearched: true });
+        this.props.onSearchChange(term);
       }
-    });
+    }
   };
 
   onClearSearchPress = () => {
-    this.setState({ term: '' });
+    this.setState({ term: '', hasSearched: false });
     this.props.onClearSearch();
   };
 
@@ -83,11 +110,13 @@ class AddNewItem extends Component {
     const {
       error,
       items,
-      hasExistingAuthors
+      hasExistingAuthors,
+      searchOnType
     } = this.props;
 
     const term = this.state.term;
     const isFetching = this.state.isFetching;
+    const hasSearched = this.state.hasSearched;
 
     return (
       <PageContent title={translate('AddNewItem')}>
@@ -107,6 +136,7 @@ class AddNewItem extends Component {
               placeholder={translate('SearchBoxPlaceHolder')}
               autoFocus={true}
               onChange={this.onSearchInputChange}
+              onKeyDown={this.onSearchInputKeyDown}
             />
 
             <Button
@@ -167,7 +197,7 @@ class AddNewItem extends Component {
           }
 
           {
-            !isFetching && !error && !items.length && !!term &&
+            !isFetching && !error && !items.length && !!term && hasSearched &&
               <div className={styles.message}>
                 <div className={styles.noResults}>
                   {translate('CouldntFindAnyResultsForTerm', [term])}
@@ -181,18 +211,20 @@ class AddNewItem extends Component {
           }
 
           {
-            term ?
-              null :
+            !hasSearched ?
               <div className={styles.message}>
                 <div className={styles.helpText}>
-                  {translate('ItsEasyToAddANewAuthorOrBookJustStartTypingTheNameOfTheItemYouWantToAdd')}
+                  {searchOnType ? 
+                    translate('ItsEasyToAddANewAuthorOrBookJustStartTypingTheNameOfTheItemYouWantToAdd') :
+                    'It\'s easy to add a new author or book, just start typing the name of the item you want to add and press Enter to search'
+                  }
                 </div>
                 <div>
                   You can also search using the
                   <Link to="https://goodreads.com"> Goodreads ID </Link>
                   of a book (e.g. edition:656), work (e.g. work:4912783) or author (e.g. author:128382), the isbn (e.g. isbn:067003469X) or the asin (e.g. asin:B00JCDK5ME)
                 </div>
-              </div>
+              </div> : null
           }
 
           {
@@ -228,8 +260,13 @@ AddNewItem.propTypes = {
   addError: PropTypes.object,
   items: PropTypes.arrayOf(PropTypes.object).isRequired,
   hasExistingAuthors: PropTypes.bool.isRequired,
+  searchOnType: PropTypes.bool,
   onSearchChange: PropTypes.func.isRequired,
   onClearSearch: PropTypes.func.isRequired
+};
+
+AddNewItem.defaultProps = {
+  searchOnType: true
 };
 
 export default AddNewItem;

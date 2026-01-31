@@ -233,6 +233,21 @@ class UISettings extends Component {
                     />
                   </FormGroup>
                 </FieldSet>
+
+                <FieldSet legend={translate('Search')}>
+                  <FormGroup>
+                    <FormLabel>
+                      {translate('SearchOnType')}
+                    </FormLabel>
+                    <FormInputGroup
+                      type={inputTypes.CHECK}
+                      name="searchOnType"
+                      helpText={translate('SearchOnTypeHelpText')}
+                      onChange={onInputChange}
+                      {...settings.searchOnType}
+                    />
+                  </FormGroup>
+                </FieldSet>
               </Form>
           }
         </PageContentBody>

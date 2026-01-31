@@ -378,6 +378,13 @@ namespace NzbDrone.Core.Configuration
             set { SetValue("UILanguage", value); }
         }
 
+        public bool SearchOnType
+        {
+            get { return GetValueBoolean("SearchOnType", true); }
+
+            set { SetValue("SearchOnType", value); }
+        }
+
         public bool CleanupMetadataImages
         {
             get { return GetValueBoolean("CleanupMetadataImages", true); }

@@ -18,6 +18,7 @@ namespace Readarr.Api.V1.Config
         public bool EnableColorImpairedMode { get; set; }
         public int UILanguage { get; set; }
         public string Theme { get; set; }
+        public bool SearchOnType { get; set; }
     }
 
     public static class UiConfigResourceMapper
@@ -37,7 +38,8 @@ namespace Readarr.Api.V1.Config
                 EnableColorImpairedMode = model.EnableColorImpairedMode,
                 UILanguage = model.UILanguage,
 
-                Theme = config.Theme
+                Theme = config.Theme,
+                SearchOnType = model.SearchOnType
             };
         }
     }
