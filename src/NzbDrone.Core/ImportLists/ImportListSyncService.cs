@@ -109,6 +109,36 @@ namespace NzbDrone.Core.ImportLists
 
             var listExclusions = _importListExclusionService.All();
 
+            // Batch search for unmapped books and authors
+            var bookSearchQueries = items
+                .Where(r => r.Book.IsNotNullOrWhiteSpace() && r.BookGoodreadsId.IsNullOrWhiteSpace() && r.EditionGoodreadsId.IsNullOrWhiteSpace())
+                .Select(r => $"{r.Book} {r.Author}")
+                .Distinct()
+                .ToList();
+
+            var authorSearchQueries = items
+                .Where(r => r.Author.IsNotNullOrWhiteSpace() && r.AuthorGoodreadsId.IsNullOrWhiteSpace() && r.Book.IsNullOrWhiteSpace())
+                .Select(r => r.Author)
+                .Distinct()
+                .ToList();
+
+            Dictionary<string, List<Book>> batchResults = null;
+
+            if (bookSearchQueries.Any() || authorSearchQueries.Any())
+            {
+                var allQueries = bookSearchQueries.Concat(authorSearchQueries).ToList();
+                _logger.Debug("Performing batch search for {0} queries", allQueries.Count);
+
+                try
+                {
+                    batchResults = (_bookInfoProxy as MetadataSource.BookInfo.BookInfoProxy)?.SearchBatch(allQueries);
+                }
+                catch (System.Exception ex)
+                {
+                    _logger.Warn(ex, "Batch search failed, falling back to individual searches");
+                }
+            }
+
             foreach (var report in items)
             {
                 _logger.ProgressTrace("Processing list item {0}/{1}", reportNumber, items.Count);
@@ -121,7 +151,7 @@ namespace NzbDrone.Core.ImportLists
                 {
                     if (report.EditionGoodreadsId.IsNullOrWhiteSpace() || report.AuthorGoodreadsId.IsNullOrWhiteSpace() || report.BookGoodreadsId.IsNullOrWhiteSpace())
                     {
-                        MapBookReport(report);
+                        MapBookReport(report, batchResults);
                     }
 
                     ProcessBookReport(importList, report, listExclusions, booksToAdd, authorsToAdd);
@@ -130,7 +160,7 @@ namespace NzbDrone.Core.ImportLists
                 {
                     if (report.AuthorGoodreadsId.IsNullOrWhiteSpace())
                     {
-                        MapAuthorReport(report);
+                        MapAuthorReport(report, batchResults);
                     }
 
                     ProcessAuthorReport(importList, report, listExclusions, authorsToAdd);
@@ -153,7 +183,7 @@ namespace NzbDrone.Core.ImportLists
             return processed;
         }
 
-        private void MapBookReport(ImportListItemInfo report)
+        private void MapBookReport(ImportListItemInfo report, Dictionary<string, List<Book>> batchResults = null)
         {
             if (report.AuthorGoodreadsId.IsNotNullOrWhiteSpace() && report.BookGoodreadsId.IsNotNullOrWhiteSpace())
             {
@@ -202,21 +232,39 @@ namespace NzbDrone.Core.ImportLists
             }
             else
             {
-                var mappedBook = _goodreadsSearchProxy.Search($"{report.Book} {report.Author}").FirstOrDefault();
+                var query = $"{report.Book} {report.Author}";
 
-                if (mappedBook == null)
+                // Try batch results first
+                if (batchResults != null && batchResults.TryGetValue(query, out var mappedBooks) && mappedBooks.Any())
                 {
-                    _logger.Trace($"Nothing found for {report.Author} - {report.Book}");
-                    return;
+                    var mappedBook = mappedBooks.First();
+                    _logger.Trace($"Mapped Book {report.Book} by Author {report.Author} to [{mappedBook.ForeignBookId}] {mappedBook.Title} from batch");
+
+                    report.BookGoodreadsId = mappedBook.ForeignBookId;
+                    report.Book = mappedBook.Title;
+                    report.Author ??= mappedBook.AuthorMetadata.Value.Name;
+                    report.AuthorGoodreadsId ??= mappedBook.AuthorMetadata.Value.ForeignAuthorId;
+                    report.EditionGoodreadsId = mappedBook.Editions?.Value?.FirstOrDefault()?.ForeignEditionId;
                 }
+                else
+                {
+                    // Fallback to individual search
+                    var mappedBook = _goodreadsSearchProxy.Search(query).FirstOrDefault();
 
-                _logger.Trace($"Mapped Book {report.Book} by Author {report.Author} to [{mappedBook.WorkId}] {mappedBook.BookTitleBare}");
+                    if (mappedBook == null)
+                    {
+                        _logger.Trace($"Nothing found for {report.Author} - {report.Book}");
+                        return;
+                    }
 
-                report.BookGoodreadsId = mappedBook.WorkId.ToString();
-                report.Book = mappedBook.BookTitleBare;
-                report.Author ??= mappedBook.Author.Name;
-                report.AuthorGoodreadsId ??= mappedBook.Author.Id.ToString();
-                report.EditionGoodreadsId = mappedBook.BookId.ToString();
+                    _logger.Trace($"Mapped Book {report.Book} by Author {report.Author} to [{mappedBook.WorkId}] {mappedBook.BookTitleBare}");
+
+                    report.BookGoodreadsId = mappedBook.WorkId.ToString();
+                    report.Book = mappedBook.BookTitleBare;
+                    report.Author ??= mappedBook.Author.Name;
+                    report.AuthorGoodreadsId ??= mappedBook.Author.Id.ToString();
+                    report.EditionGoodreadsId = mappedBook.BookId.ToString();
+                }
             }
         }
 
@@ -347,20 +395,33 @@ namespace NzbDrone.Core.ImportLists
             }
         }
 
-        private void MapAuthorReport(ImportListItemInfo report)
+        private void MapAuthorReport(ImportListItemInfo report, Dictionary<string, List<Book>> batchResults = null)
         {
-            var mappedBook = _goodreadsSearchProxy.Search(report.Author).FirstOrDefault();
-
-            if (mappedBook == null)
+            // Try batch results first
+            if (batchResults != null && batchResults.TryGetValue(report.Author, out var mappedBooks) && mappedBooks.Any())
             {
-                _logger.Trace($"Nothing found for {report.Author}");
-                return;
+                var firstBook = mappedBooks.First();
+                _logger.Trace($"Mapped {report.Author} to [{firstBook.AuthorMetadata.Value.Name}] from batch");
+
+                report.Author = firstBook.AuthorMetadata.Value.Name;
+                report.AuthorGoodreadsId = firstBook.AuthorMetadata.Value.ForeignAuthorId;
             }
+            else
+            {
+                // Fallback to individual search
+                var mappedBook = _goodreadsSearchProxy.Search(report.Author).FirstOrDefault();
 
-            _logger.Trace($"Mapped {report.Author} to [{mappedBook.Author.Name}]");
+                if (mappedBook == null)
+                {
+                    _logger.Trace($"Nothing found for {report.Author}");
+                    return;
+                }
 
-            report.Author = mappedBook.Author.Name;
-            report.AuthorGoodreadsId = mappedBook.Author.Id.ToString();
+                _logger.Trace($"Mapped {report.Author} to [{mappedBook.Author.Name}]");
+
+                report.Author = mappedBook.Author.Name;
+                report.AuthorGoodreadsId = mappedBook.Author.Id.ToString();
+            }
         }
 
         private Author ProcessAuthorReport(ImportListDefinition importList, ImportListItemInfo report, List<ImportListExclusion> listExclusions, List<Author> authorsToAdd)

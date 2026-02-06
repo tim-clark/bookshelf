@@ -102,11 +102,11 @@ namespace NzbDrone.Core.MediaFiles
                 Track = (uint)trackfile.Part,
                 TrackCount = (uint)partCount,
                 Book = book.Title,
-                Disc = fileTags.Disc,
-                DiscCount = fileTags.DiscCount,
+                Disc = fileTags?.Disc ?? 0,
+                DiscCount = fileTags?.DiscCount ?? 0,
 
                 // We may have omitted media so index in the list isn't the same as medium number
-                Media = fileTags.Media,
+                Media = fileTags?.Media,
                 Date = edition.ReleaseDate,
                 Year = (uint)(edition.ReleaseDate?.Year ?? 0),
                 OriginalReleaseDate = book.ReleaseDate,

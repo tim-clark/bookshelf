@@ -41,6 +41,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         private readonly IMetadataRequestBuilder _requestBuilder;
         private readonly ICached<HashSet<string>> _cache;
         private readonly CachingService _authorCache;
+        private int _rateLimitAttempts = 0;
 
         public BookInfoProxy(IHttpClient httpClient,
                              ICachedHttpResponseService cachedHttpClient,
@@ -404,6 +405,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 }
                 else
                 {
+                    ResetRateLimitAttempts();
                     break;
                 }
             }
@@ -498,11 +500,92 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 }
                 else
                 {
+                    ResetRateLimitAttempts();
                     break;
                 }
             }
 
             return MapBulkBook(httpResponse.Resource);
+        }
+
+        public Dictionary<string, List<Book>> SearchBatch(List<string> queries)
+        {
+            _logger.Debug("Performing batch search for {0} queries", queries.Count);
+
+            HttpResponse<BatchSearchResource> httpResponse;
+
+            while (true)
+            {
+                var httpRequest = _requestBuilder.GetRequestBuilder().Create()
+                    .SetSegment("route", "search/batch")
+                    .SetHeader("Content-Type", "application/json")
+                    .Build();
+
+                httpRequest.SetContent(queries.ToJson());
+                httpRequest.ContentSummary = $"Batch search: {queries.Count} queries";
+
+                httpRequest.AllowAutoRedirect = true;
+                httpRequest.SuppressHttpErrorStatusCodes = new[] { HttpStatusCode.TooManyRequests };
+
+                httpResponse = _httpClient.Post<BatchSearchResource>(httpRequest);
+
+                if (httpResponse.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    WaitUntilRetry(httpResponse);
+                }
+                else if (httpResponse.StatusCode == HttpStatusCode.NotFound)
+                {
+                    _logger.Warn("Batch search endpoint not available, falling back to individual searches");
+                    return null;
+                }
+                else
+                {
+                    ResetRateLimitAttempts();
+                    break;
+                }
+            }
+
+            return MapBatchSearchResults(httpResponse.Resource);
+        }
+
+        private Dictionary<string, List<Book>> MapBatchSearchResults(BatchSearchResource resource)
+        {
+            var results = new Dictionary<string, List<Book>>();
+
+            if (resource?.Results == null)
+            {
+                return results;
+            }
+
+            foreach (var kvp in resource.Results)
+            {
+                try
+                {
+                    // Collect all unique book IDs from this query's results
+                    var bookIds = kvp.Value.Select(x => x.BookId).Distinct().ToList();
+
+                    if (bookIds.Any())
+                    {
+                        // Use the existing MapSearchResult method to fetch book details
+                        var books = MapSearchResult(bookIds);
+                        results[kvp.Key] = books;
+                        _logger.Trace("Batch search mapped {0} books for query: {1}", books.Count, kvp.Key);
+                    }
+                    else
+                    {
+                        results[kvp.Key] = new List<Book>();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn(ex, "Error mapping batch search result for query: {0}", kvp.Key);
+                    results[kvp.Key] = new List<Book>();
+                }
+            }
+
+            _logger.Debug("Batch search mapped {0} total queries", results.Count);
+
+            return results;
         }
 
         private List<Book> MapBulkBook(BulkBookResource resource)
@@ -638,6 +721,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 {
                     resource.Works ??= new List<WorkResource>();
                     resource.Series ??= new List<SeriesResource>();
+                    ResetRateLimitAttempts();
                     break;
                 }
 
@@ -650,6 +734,76 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             }
 
             return MapAuthor(resource);
+        }
+
+        public Dictionary<string, Author> GetAuthorInfoBatch(List<string> foreignAuthorIds)
+        {
+            _logger.Debug("Performing batch author fetch for {0} authors", foreignAuthorIds.Count);
+
+            HttpResponse<BatchAuthorResource> httpResponse;
+
+            while (true)
+            {
+                var httpRequest = _requestBuilder.GetRequestBuilder().Create()
+                    .SetSegment("route", "author/batch")
+                    .SetHeader("Content-Type", "application/json")
+                    .Build();
+
+                // Convert string IDs to integers for the API
+                var authorIdInts = foreignAuthorIds.Select(id => int.Parse(id)).ToList();
+                httpRequest.SetContent(authorIdInts.ToJson());
+                httpRequest.ContentSummary = $"Batch author fetch: {foreignAuthorIds.Count} authors";
+
+                httpRequest.AllowAutoRedirect = true;
+                httpRequest.SuppressHttpErrorStatusCodes = new[] { HttpStatusCode.TooManyRequests };
+
+                httpResponse = _httpClient.Post<BatchAuthorResource>(httpRequest);
+
+                if (httpResponse.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    WaitUntilRetry(httpResponse);
+                }
+                else if (httpResponse.StatusCode == HttpStatusCode.NotFound)
+                {
+                    _logger.Warn("Batch author endpoint not available, falling back to individual fetches");
+                    return null;
+                }
+                else
+                {
+                    ResetRateLimitAttempts();
+                    break;
+                }
+            }
+
+            return MapBatchAuthorResults(httpResponse.Resource);
+        }
+
+        private Dictionary<string, Author> MapBatchAuthorResults(BatchAuthorResource resource)
+        {
+            var results = new Dictionary<string, Author>();
+
+            if (resource?.Results == null)
+            {
+                return results;
+            }
+
+            foreach (var kvp in resource.Results)
+            {
+                try
+                {
+                    var author = MapAuthor(kvp.Value);
+                    results[kvp.Key] = author;
+                    _logger.Trace("Batch author mapped: {0}", author.Metadata.Value.Name);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn(ex, "Error mapping batch author result for author ID: {0}", kvp.Key);
+                }
+            }
+
+            _logger.Debug("Batch author fetch mapped {0} authors", results.Count);
+
+            return results;
         }
 
         private Tuple<string, Book, List<AuthorMetadata>> PollBook(string foreignBookId)
@@ -672,6 +826,8 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                     WaitUntilRetry(httpResponse);
                     continue;
                 }
+
+                ResetRateLimitAttempts();
 
                 if (httpResponse.StatusCode == HttpStatusCode.NotFound)
                 {
@@ -744,21 +900,34 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
 
         private void WaitUntilRetry(HttpResponse response)
         {
-            var seconds = 5;
+            _rateLimitAttempts++;
+            var baseSeconds = 5;
 
             if (response.Headers.ContainsKey("Retry-After"))
             {
                 var retryAfter = response.Headers["Retry-After"];
 
-                if (!int.TryParse(retryAfter, out seconds))
+                if (!int.TryParse(retryAfter, out baseSeconds))
                 {
-                    seconds = 5;
+                    baseSeconds = 5;
                 }
             }
 
-            _logger.Info("BookInfo returned 429, backing off for {0}s", seconds);
+            // Exponential backoff: 5s, 10s, 20s, 40s, 80s, capped at 300s (5 min)
+            var waitSeconds = Math.Min(baseSeconds * Math.Pow(2, _rateLimitAttempts - 1), 300);
 
-            Thread.Sleep(TimeSpan.FromSeconds(seconds));
+            _logger.Warn("BookInfo rate limited (attempt {0}), backing off for {1}s", _rateLimitAttempts, waitSeconds);
+
+            Thread.Sleep(TimeSpan.FromSeconds(waitSeconds));
+        }
+
+        private void ResetRateLimitAttempts()
+        {
+            if (_rateLimitAttempts > 0)
+            {
+                _logger.Debug("Resetting rate limit attempt counter");
+                _rateLimitAttempts = 0;
+            }
         }
 
         private static AuthorMetadata MapAuthorMetadata(AuthorResource resource)
